@@ -12,12 +12,14 @@ import (
 	"github.com/merdernoty/stool-guru-bot/internal/bot"
 	"github.com/merdernoty/stool-guru-bot/internal/config"
 	"github.com/merdernoty/stool-guru-bot/internal/server"
+	"github.com/merdernoty/stool-guru-bot/pkg/gemini"
 )
 
 type App struct {
 	config *config.Config
 	server *server.Server
 	bot    *bot.StoolGuruBot
+	geminiService *gemini.GeminiService
 }
 
 func New() (*App, error) {
@@ -27,10 +29,17 @@ func New() (*App, error) {
 	}
 
 	log.Printf("📋 Loaded config: %s", cfg.String())
+		// Инициализируем Gemini сервис
+		geminiService, err := gemini.NewGeminiService(cfg.GeminiAPIKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Gemini service: %w", err)
+		}
+	
+		// Создаем бот с Gemini сервисом
+		botInstance, err := bot.NewBot(cfg, geminiService) // Передаем Gemini сервис в бот
 
-	botInstance, err := bot.NewBot(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create bot: %w", err)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create bot: %w", err)
 	}
 
 	serverInstance := server.NewServer(cfg, botInstance)
@@ -51,7 +60,6 @@ func (a *App) Start() error {
 	if err := a.bot.SetWebhook(); err != nil {
 		return fmt.Errorf("failed to set webhook: %w", err)
 	}
-
 	go func() {
 		if err := a.server.Start(); err != nil {
 			log.Fatal("Server failed to start:", err)

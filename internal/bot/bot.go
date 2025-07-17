@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -13,16 +14,18 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 	"github.com/merdernoty/stool-guru-bot/internal/config"
+	"github.com/merdernoty/stool-guru-bot/pkg/gemini"
 )
 
 type StoolGuruBot struct {
-	bot    *bot.Bot
-	config *config.Config
-	ctx    context.Context
-	cancel context.CancelFunc
+	bot           *bot.Bot
+	config        *config.Config
+	geminiService *gemini.GeminiService
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
-func NewBot(cfg *config.Config) (*StoolGuruBot, error) {
+func NewBot(cfg *config.Config, geminiService *gemini.GeminiService) (*StoolGuruBot, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	httpClient := &http.Client{
 		Timeout: cfg.Timeout,
@@ -53,10 +56,11 @@ func NewBot(cfg *config.Config) (*StoolGuruBot, error) {
 	}
 
 	stoolBot := &StoolGuruBot{
-		bot:    b,
-		config: cfg,
-		ctx:    ctx,
-		cancel: cancel,
+		bot:           b,
+		config:        cfg,
+		geminiService: geminiService,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 
 	stoolBot.registerHandlers()
@@ -66,11 +70,12 @@ func NewBot(cfg *config.Config) (*StoolGuruBot, error) {
 }
 
 func (sb *StoolGuruBot) registerHandlers() {
-	// Команды
 	sb.bot.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeExact, sb.handleStart)
 	sb.bot.RegisterHandler(bot.HandlerTypeMessageText, "/help", bot.MatchTypeExact, sb.handleHelp)
 	sb.bot.RegisterHandler(bot.HandlerTypeMessageText, "/test", bot.MatchTypeExact, sb.handleTest)
 	sb.bot.RegisterHandler(bot.HandlerTypeMessageText, "/analyze", bot.MatchTypeExact, sb.handleAnalyze)
+
+	sb.bot.RegisterHandler(bot.HandlerTypeMessagePhoto, "", bot.MatchTypeExact, sb.handlePhoto)
 
 	// Callback queries
 	sb.bot.RegisterHandler(bot.HandlerTypeCallbackQueryData, "test", bot.MatchTypeExact, sb.handleTestCallback)
@@ -83,7 +88,108 @@ func (sb *StoolGuruBot) registerHandlers() {
 	log.Println("📝 Handlers registered successfully")
 }
 
-// Message handlers
+func (sb *StoolGuruBot) handlePhoto(ctx context.Context, b *bot.Bot, update *models.Update) {
+	log.Println("📸 Photo received for analysis")
+
+	loadingMsg, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: update.Message.Chat.ID,
+		Text:   "🔬 Анализирую ваше фото... Это может занять несколько секунд.",
+	})
+	if err != nil {
+		log.Printf("Error sending loading message: %v", err)
+		return
+	}
+
+	var photo *models.PhotoSize
+	if len(update.Message.Photo) > 0 {
+		photo = &update.Message.Photo[len(update.Message.Photo)-1] 
+	} else {
+		sb.sendErrorMessage(ctx, b, update.Message.Chat.ID, "Фото не найдено")
+		return
+	}
+
+	imageBytes, mimeType, err := sb.downloadFile(ctx, b, photo.FileID)
+	if err != nil {
+		log.Printf("Error downloading file: %v", err)
+		sb.sendErrorMessage(ctx, b, update.Message.Chat.ID, "Ошибка загрузки фото")
+		return
+	}
+
+	result, err := sb.geminiService.AnalyzeImage(ctx, imageBytes, mimeType)
+	if err != nil {
+		log.Printf("Error analyzing image: %v", err)
+		sb.sendErrorMessage(ctx, b, update.Message.Chat.ID, "Ошибка анализа фото")
+		return
+	}
+
+	b.DeleteMessage(ctx, &bot.DeleteMessageParams{
+		ChatID:    update.Message.Chat.ID,
+		MessageID: loadingMsg.MessageID,
+	})
+
+	responseText := fmt.Sprintf("🔬 **Результат анализа:**\n\n%s", result.Text)
+	
+	if len(responseText) > 4000 {
+		responseText = responseText[:4000] + "...\n\n✂️ *Результат сокращен*"
+	}
+
+	_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:    update.Message.Chat.ID,
+		Text:      responseText,
+		ParseMode: models.ParseModeMarkdown,
+	})
+	if err != nil {
+		log.Printf("Error sending analysis result: %v", err)
+		sb.sendErrorMessage(ctx, b, update.Message.Chat.ID, "Ошибка отправки результата")
+	}
+
+	log.Println("✅ Photo analysis completed and sent")
+}
+
+func (sb *StoolGuruBot) downloadFile(ctx context.Context, b *bot.Bot, fileID string) ([]byte, string, error) {
+	file, err := b.GetFile(ctx, &bot.GetFileParams{FileID: fileID})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get file info: %w", err)
+	}
+
+	fileURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", sb.config.TelegramToken, file.FilePath)
+
+	resp, err := http.Get(fileURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to download file: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("failed to download file, status: %d", resp.StatusCode)
+	}
+
+	imageBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read file content: %w", err)
+	}
+
+	mimeType := "image/jpeg"
+	if len(imageBytes) > 0 {
+		if len(imageBytes) > 3 && imageBytes[0] == 0x89 && imageBytes[1] == 0x50 && imageBytes[2] == 0x4E {
+			mimeType = "image/png"
+		}
+	}
+
+	log.Printf("📁 File downloaded: %d bytes, type: %s", len(imageBytes), mimeType)
+	return imageBytes, mimeType, nil
+}
+
+func (sb *StoolGuruBot) sendErrorMessage(ctx context.Context, b *bot.Bot, chatID int64, errorText string) {
+	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: chatID,
+		Text:   fmt.Sprintf("❌ %s\n\nПопробуйте еще раз или обратитесь в поддержку.", errorText),
+	})
+	if err != nil {
+		log.Printf("Error sending error message: %v", err)
+	}
+}
+
 func (sb *StoolGuruBot) handleStart(ctx context.Context, b *bot.Bot, update *models.Update) {
 	keyboard := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -97,12 +203,13 @@ func (sb *StoolGuruBot) handleStart(ctx context.Context, b *bot.Bot, update *mod
 		},
 	}
 
-	text := "🤖 Stool Guru Bot запущен\n\nПривет, я готов помочь вам с анализом здоровья.\n\nВыберите действие в меню ниже:"
+	text := "🤖 Stool Guru Bot запущен\n\nПривет! Я готов помочь вам с анализом здоровья.\n\n📸 **Просто отправьте мне фото для анализа!**\n\nИли выберите действие в меню ниже:"
 
 	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:      update.Message.Chat.ID,
 		Text:        text,
 		ReplyMarkup: keyboard,
+		ParseMode:   models.ParseModeMarkdown,
 	})
 	if err != nil {
 		log.Printf("Error sending start message: %v", err)
@@ -110,11 +217,22 @@ func (sb *StoolGuruBot) handleStart(ctx context.Context, b *bot.Bot, update *mod
 }
 
 func (sb *StoolGuruBot) handleHelp(ctx context.Context, b *bot.Bot, update *models.Update) {
-	text := "🆘 Команды бота\n\n/start • Главное меню\n/help • Эта справка\n/test • Тест функций\n/analyze • Анализ здоровья\n\nБот работает отлично 🎉"
+	text := `🆘 **Как пользоваться ботом:**
+
+📸 **Отправьте фото** - бот автоматически проанализирует изображение
+
+📋 **Команды:**
+/start • Главное меню
+/help • Эта справка  
+/test • Тест функций
+/analyze • Ручной анализ
+
+🔬 Бот использует современный ИИ для анализа и дает рекомендации как опытный врач!`
 
 	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: update.Message.Chat.ID,
-		Text:   text,
+		ChatID:    update.Message.Chat.ID,
+		Text:      text,
+		ParseMode: models.ParseModeMarkdown,
 	})
 	if err != nil {
 		log.Printf("Error sending help message: %v", err)
@@ -123,11 +241,20 @@ func (sb *StoolGuruBot) handleHelp(ctx context.Context, b *bot.Bot, update *mode
 
 func (sb *StoolGuruBot) handleTest(ctx context.Context, b *bot.Bot, update *models.Update) {
 	log.Println("🧪 Test command received")
+	testResult, err := sb.geminiService.SendTextMessage(ctx, "Привет! Это тест подключения к Gemini.")
+	if err != nil {
+		log.Printf("Gemini test failed: %v", err)
+		_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: update.Message.Chat.ID,
+			Text:   "❌ Тест не прошел! Проблема с Gemini API.",
+		})
+	} else {
+		_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: update.Message.Chat.ID,
+			Text:   fmt.Sprintf("✅ Тест прошел!\n\n🤖 Gemini ответил: %s", testResult.Text),
+		})
+	}
 
-	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: update.Message.Chat.ID,
-		Text:   "🧪 Тест прошел! HTTP клиент работает корректно.",
-	})
 	if err != nil {
 		log.Printf("Error sending test message: %v", err)
 	}
@@ -145,159 +272,3 @@ func (sb *StoolGuruBot) handleAnalyze(ctx context.Context, b *bot.Bot, update *m
 			},
 		},
 	}
-
-	text := "📊 Анализ состояния здоровья\n\nКак вы оцениваете ваше текущее состояние пищеварения?\n\nВыберите наиболее подходящий вариант:"
-
-	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID:      update.Message.Chat.ID,
-		Text:        text,
-		ReplyMarkup: keyboard,
-	})
-	if err != nil {
-		log.Printf("Error sending analyze message: %v", err)
-	}
-}
-
-func (sb *StoolGuruBot) handleTestCallback(ctx context.Context, b *bot.Bot, update *models.Update) {
-	_, err := b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
-		CallbackQueryID: update.CallbackQuery.ID,
-		Text:            "✅ Тест прошел отлично!",
-		ShowAlert:       true,
-	})
-	if err != nil {
-		log.Printf("Error answering callback: %v", err)
-	}
-}
-
-func (sb *StoolGuruBot) handleHelpCallback(ctx context.Context, b *bot.Bot, update *models.Update) {
-	_, err := b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
-		CallbackQueryID: update.CallbackQuery.ID,
-		Text:            "📋 Команды: /start /help /test /analyze",
-		ShowAlert:       false,
-	})
-	if err != nil {
-		log.Printf("Error answering callback: %v", err)
-	}
-}
-
-func (sb *StoolGuruBot) handleAnalyzeCallback(ctx context.Context, b *bot.Bot, update *models.Update) {
-	_, err := b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
-		CallbackQueryID: update.CallbackQuery.ID,
-		Text:            "📊 Выберите ваше состояние ниже",
-		ShowAlert:       false,
-	})
-	if err != nil {
-		log.Printf("Error answering callback: %v", err)
-	}
-}
-
-func (sb *StoolGuruBot) handleAnalyzeGoodCallback(ctx context.Context, b *bot.Bot, update *models.Update) {
-	_, err := b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
-		CallbackQueryID: update.CallbackQuery.ID,
-		Text:            "🟢 Отлично! Продолжайте в том же духе! Пейте воду, ешьте клетчатку, двигайтесь!",
-		ShowAlert:       true,
-	})
-	if err != nil {
-		log.Printf("Error answering callback: %v", err)
-	}
-}
-
-func (sb *StoolGuruBot) handleAnalyzeNormalCallback(ctx context.Context, b *bot.Bot, update *models.Update) {
-	_, err := b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
-		CallbackQueryID: update.CallbackQuery.ID,
-		Text:            "🟡 Нормально! Советы: больше пробиотиков, овощей, прогулки после еды",
-		ShowAlert:       true,
-	})
-	if err != nil {
-		log.Printf("Error answering callback: %v", err)
-	}
-}
-
-func (sb *StoolGuruBot) handleAnalyzeBadCallback(ctx context.Context, b *bot.Bot, update *models.Update) {
-	_, err := b.AnswerCallbackQuery(ctx, &bot.AnswerCallbackQueryParams{
-		CallbackQueryID: update.CallbackQuery.ID,
-		Text:            "🔴 При серьезных симптомах обратитесь к врачу! Пейте воду, избегайте острого",
-		ShowAlert:       true,
-	})
-	if err != nil {
-		log.Printf("Error answering callback: %v", err)
-	}
-}
-
-// Bot control methods
-func (sb *StoolGuruBot) StartPolling() error {
-	log.Println("🔄 Starting bot in polling mode...")
-
-	go func() {
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-		<-c
-		log.Println("🛑 Received shutdown signal...")
-		sb.cancel()
-	}()
-
-	log.Println("✅ Bot started! Попробуйте отправить /start в Telegram")
-	sb.bot.Start(sb.ctx)
-	log.Println("✅ Bot stopped gracefully")
-	return nil
-}
-
-func (sb *StoolGuruBot) SetWebhook() error {
-	if sb.config.WebhookURL == "" {
-		return fmt.Errorf("webhook URL is required")
-	}
-
-	webhookURL := sb.config.WebhookURL + "/bot"
-
-	ctxWithTimeout, cancel := context.WithTimeout(sb.ctx, sb.config.Timeout)
-	defer cancel()
-
-	_, err := sb.bot.SetWebhook(ctxWithTimeout, &bot.SetWebhookParams{
-		URL: webhookURL,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to set webhook: %w", err)
-	}
-
-	log.Printf("📡 Webhook set to: %s", webhookURL)
-	return nil
-}
-
-func (sb *StoolGuruBot) ProcessWebhookUpdate(update *models.Update) error {
-	sb.bot.ProcessUpdate(sb.ctx, update)
-	return nil
-}
-
-// Middleware
-func debugMiddleware(next bot.HandlerFunc) bot.HandlerFunc {
-	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
-		if update.Message != nil {
-			log.Printf("🔍 Message from @%s: %s",
-				update.Message.From.Username,
-				update.Message.Text)
-		}
-		if update.CallbackQuery != nil {
-			log.Printf("🔍 Callback from @%s: %s",
-				update.CallbackQuery.From.Username,
-				update.CallbackQuery.Data)
-		}
-		next(ctx, b, update)
-	}
-}
-
-// Default handler для необработанных сообщений
-func defaultHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
-	if update.Message != nil && update.Message.Text != "" {
-		log.Printf("📨 Unhandled message: %s", update.Message.Text)
-
-		response := "🤔 Не понимаю эту команду.\n\nПопробуйте:\n• /start • главное меню\n• /help • справка\n• /test • тест\n• /analyze • анализ"
-
-		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: update.Message.Chat.ID,
-			Text:   response,
-		})
-		if err != nil {
-			log.Printf("Error in default handler: %v", err)
-		}
-	}
-}

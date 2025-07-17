@@ -27,6 +27,7 @@ func Load() (*Config, error) {
 		TelegramToken: getEnv("TELEGRAM_TOKEN", ""),
 		WebhookURL:    getEnv("WEBHOOK_URL", ""),
 		Port:          getEnv("PORT", "8080"),
+		GeminiAPIKey:  getEnv("GEMINI_API_KEY", ""),
 		Debug:         getEnvAsBool("DEBUG", false),
 		Timeout:       time.Duration(getEnvAsInt("TIMEOUT_SECONDS", 60)) * time.Second,
 	}
