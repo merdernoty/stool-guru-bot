@@ -10,15 +10,15 @@ import (
 	"time"
 
 	"github.com/merdernoty/stool-guru-bot/internal/bot"
+	"github.com/merdernoty/stool-guru-bot/internal/bot/services/gemini"
 	"github.com/merdernoty/stool-guru-bot/internal/config"
 	"github.com/merdernoty/stool-guru-bot/internal/server"
-	"github.com/merdernoty/stool-guru-bot/pkg/gemini"
 )
 
 type App struct {
-	config *config.Config
-	server *server.Server
-	bot    *bot.StoolGuruBot
+	config        *config.Config
+	server        *server.Server
+	bot           *bot.StoolGuruBot
 	geminiService *gemini.GeminiService
 }
 
@@ -29,29 +29,40 @@ func New() (*App, error) {
 	}
 
 	log.Printf("📋 Loaded config: %s", cfg.String())
-		// Инициализируем Gemini сервис
-		geminiService, err := gemini.NewGeminiService(cfg.GeminiAPIKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Gemini service: %w", err)
-		}
-	
-		// Создаем бот с Gemini сервисом
-		botInstance, err := bot.NewBot(cfg, geminiService) // Передаем Gemini сервис в бот
 
-		if err != nil {
-			return nil, fmt.Errorf("failed to create bot: %w", err)
+	// Инициализируем Gemini сервис
+	geminiService, err := gemini.NewGeminiService(cfg.GeminiAPIKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Gemini service: %w", err)
 	}
+
+	// Создаем бот с Gemini сервисом
+	botInstance, err := bot.NewBot(cfg, geminiService)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create bot: %w", err)
+	}
+
+	// Устанавливаем глобальную ссылку на бота для обработки фотографий
+	botInstance.SetGlobalBot()
 
 	serverInstance := server.NewServer(cfg, botInstance)
 
 	return &App{
-		config: cfg,
-		server: serverInstance,
-		bot:    botInstance,
+		config:        cfg,
+		server:        serverInstance,
+		bot:           botInstance,
+		geminiService: geminiService,
 	}, nil
 }
 
 func (a *App) Start() error {
+	// Устанавливаем graceful shutdown для Gemini
+	defer func() {
+		if err := a.geminiService.Close(); err != nil {
+			log.Printf("Error closing Gemini service: %v", err)
+		}
+	}()
+
 	if a.config.Debug {
 		log.Println("🔄 Debug mode: using polling instead of webhook")
 		return a.bot.StartPolling()
@@ -60,6 +71,7 @@ func (a *App) Start() error {
 	if err := a.bot.SetWebhook(); err != nil {
 		return fmt.Errorf("failed to set webhook: %w", err)
 	}
+
 	go func() {
 		if err := a.server.Start(); err != nil {
 			log.Fatal("Server failed to start:", err)
@@ -72,7 +84,7 @@ func (a *App) Start() error {
 
 	log.Println("🛑 Shutting down server...")
 
-
+	// Создаем контекст с таймаутом для graceful shutdown
 	_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

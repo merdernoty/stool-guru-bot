@@ -16,6 +16,7 @@ type Config struct {
 	Port          string
 	Debug         bool
 	Timeout       time.Duration
+	GeminiAPIKey  string
 }
 
 func Load() (*Config, error) {
