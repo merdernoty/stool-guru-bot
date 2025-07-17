@@ -8,15 +8,24 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
-type StartHandler struct{}
+type StartHandler struct {
+	BaseHandler
+}
 
 func NewStartHandler() *StartHandler {
-	return &StartHandler{}
+	return &StartHandler{
+		BaseHandler: NewBaseHandler("/start", bot.MatchTypeExact),
+	}
 }
 
 func (h *StartHandler) Handle(ctx context.Context, b *bot.Bot, update *models.Update) {
-	log.Printf("📋 Start command received from @%s", update.Message.From.Username)
-
+	username := "Anonymous"
+	if update.Message.From.Username != "" {
+		username = "@" + update.Message.From.Username
+	}
+	
+	log.Printf("📋 Start command received from %s", username)
+	
 	keyboard := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
 			{
@@ -29,11 +38,11 @@ func (h *StartHandler) Handle(ctx context.Context, b *bot.Bot, update *models.Up
 		},
 	}
 
-	text := `🤖 Stool Guru Bot запущен
+	text := `🤖 <b>Stool Guru Bot запущен</b>
 
 Привет! Я готов помочь вам с анализом здоровья.
 
-📸 **Просто отправьте мне фото для анализа!**
+📸 <b>Просто отправьте мне фото для анализа!</b>
 
 Или выберите действие в меню ниже:`
 
@@ -41,17 +50,10 @@ func (h *StartHandler) Handle(ctx context.Context, b *bot.Bot, update *models.Up
 		ChatID:      update.Message.Chat.ID,
 		Text:        text,
 		ReplyMarkup: keyboard,
-		ParseMode:   models.ParseModeMarkdown,
+		ParseMode:   models.ParseModeHTML,
 	})
 	if err != nil {
 		log.Printf("Error sending start message: %v", err)
+		sendErrorMessage(ctx, b, update.Message.Chat.ID, "Ошибка отправки приветственного сообщения")
 	}
-}
-
-func (h *StartHandler) GetPattern() string {
-	return "/start"
-}
-
-func (h *StartHandler) GetMatchType() bot.MatchType {
-	return bot.MatchTypeExact
 }

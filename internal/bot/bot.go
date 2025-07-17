@@ -59,14 +59,13 @@ func NewBot(cfg *config.Config, geminiService *gemini.GeminiService) (*StoolGuru
 
 	startHandler := commands.NewStartHandler()
 	helpHandler := commands.NewHelpHandler()
-	testHandler := commands.NewTestHandler(geminiService)
 	callbackHandlers := callbacks.NewCallbackHandlers()
 
 
 	botRouter := router.NewRouter(
 		startHandler,
 		helpHandler,
-		testHandler,
+
 		callbackHandlers,
 	)
 
@@ -84,7 +83,6 @@ func NewBot(cfg *config.Config, geminiService *gemini.GeminiService) (*StoolGuru
 	return stoolBot, nil
 }
 
-	// StartPolling запускает бота в режиме polling
 func (sb *StoolGuruBot) StartPolling() error {
 	log.Println("🔄 Starting bot in polling mode...")
 

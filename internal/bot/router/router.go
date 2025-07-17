@@ -11,7 +11,6 @@ import (
 type Router struct {
 	startHandler *commands.StartHandler
 	helpHandler  *commands.HelpHandler
-	testHandler  *commands.TestHandler
 
 	// Callback handlers
 	callbackHandlers *callbacks.CallbackHandlers
@@ -20,13 +19,11 @@ type Router struct {
 func NewRouter(
 	startHandler *commands.StartHandler,
 	helpHandler *commands.HelpHandler,
-	testHandler *commands.TestHandler,
 	callbackHandlers *callbacks.CallbackHandlers,
 ) *Router {
 	return &Router{
 		startHandler:     startHandler,
 		helpHandler:      helpHandler,
-		testHandler:      testHandler,
 		callbackHandlers: callbackHandlers,
 	}
 }
@@ -35,22 +32,20 @@ func (r *Router) RegisterHandlers(b *bot.Bot) {
 	log.Println("📝 Registering handlers...")
 
 	r.registerCommands(b)
-
 	r.registerCallbacks(b)
 
 	log.Println("✅ All handlers registered successfully")
 }
 
 func (r *Router) registerCommands(b *bot.Bot) {
-	commands := []commands.CommandHandler{
+	commandHandlers := []commands.CommandHandler{
 		r.startHandler,
 		r.helpHandler,
-		r.testHandler,
 	}
 
-	for _, cmd := range commands {
+	for _, cmd := range commandHandlers {
 		b.RegisterHandler(
-			commands.HandlerTypeCommand,
+			bot.HandlerTypeMessageText,
 			cmd.GetPattern(),
 			cmd.GetMatchType(),
 			cmd.Handle,

@@ -30,19 +30,17 @@ func New() (*App, error) {
 
 	log.Printf("📋 Loaded config: %s", cfg.String())
 
-	// Инициализируем Gemini сервис
+	
 	geminiService, err := gemini.NewGeminiService(cfg.GeminiAPIKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Gemini service: %w", err)
 	}
 
-	// Создаем бот с Gemini сервисом
 	botInstance, err := bot.NewBot(cfg, geminiService)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create bot: %w", err)
 	}
 
-	// Устанавливаем глобальную ссылку на бота для обработки фотографий
 	botInstance.SetGlobalBot()
 
 	serverInstance := server.NewServer(cfg, botInstance)
@@ -56,7 +54,6 @@ func New() (*App, error) {
 }
 
 func (a *App) Start() error {
-	// Устанавливаем graceful shutdown для Gemini
 	defer func() {
 		if err := a.geminiService.Close(); err != nil {
 			log.Printf("Error closing Gemini service: %v", err)
@@ -84,7 +81,6 @@ func (a *App) Start() error {
 
 	log.Println("🛑 Shutting down server...")
 
-	// Создаем контекст с таймаутом для graceful shutdown
 	_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

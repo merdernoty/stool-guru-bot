@@ -8,20 +8,24 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
-type HelpHandler struct{}
+type HelpHandler struct {
+	BaseHandler
+}
 
 func NewHelpHandler() *HelpHandler {
-	return &HelpHandler{}
+	return &HelpHandler{
+		BaseHandler: NewBaseHandler("/help", bot.MatchTypeExact),
+	}
 }
 
 func (h *HelpHandler) Handle(ctx context.Context, b *bot.Bot, update *models.Update) {
-	log.Printf("🆘 Help command received from @%s", update.Message.From.Username)
+	log.Printf("❓ Help command received from %s", update.Message.From.Username)
 
-	text := `🆘 **Как пользоваться ботом:**
+	text := `🆘 <b>Как пользоваться ботом:</b>
 
-📸 **Отправьте фото** - бот автоматически проанализирует изображение
+📸 <b>Отправьте фото</b> - бот автоматически проанализирует изображение
 
-📋 **Команды:**
+📋 <b>Команды:</b>
 /start • Главное меню
 /help • Эта справка  
 /test • Тест функций
@@ -29,22 +33,15 @@ func (h *HelpHandler) Handle(ctx context.Context, b *bot.Bot, update *models.Upd
 
 🔬 Бот использует современный ИИ для анализа и дает рекомендации как опытный врач!
 
-⚠️ **Важно:** Результаты анализа не заменяют консультацию врача. При серьезных симптомах обратитесь к специалисту.`
+💡 <b>Совет:</b> Для лучшего анализа убедитесь, что фото четкое и хорошо освещенное.`
 
 	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:    update.Message.Chat.ID,
 		Text:      text,
-		ParseMode: models.ParseModeMarkdown,
+		ParseMode: models.ParseModeHTML,
 	})
 	if err != nil {
 		log.Printf("Error sending help message: %v", err)
+		sendErrorMessage(ctx, b, update.Message.Chat.ID, "Ошибка отправки справки")
 	}
-}
-
-func (h *HelpHandler) GetPattern() string {
-	return "/help"
-}
-
-func (h *HelpHandler) GetMatchType() bot.MatchType {
-	return bot.MatchTypeExact
 }
